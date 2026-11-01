@@ -6,7 +6,7 @@ Automate unlocking GitHub profile achievements:
 - Pair Extraordinaire (Bronze: 1, Silver: 10, Gold: 24 co-authored PRs)
 - Quickdraw (Closed issue/PR within 5 minutes)
 - YOLO (Merged PR without review)
-- Galaxy Brain (Helper for Discussions Q&A)
+- Galaxy Brain (Accepted answers in Discussions Q&A)
 
 Built using Python's standard library only (no external dependencies required).
 """
@@ -17,9 +17,22 @@ import time
 import json
 import base64
 import argparse
+import subprocess
 import urllib.request
 import urllib.error
 from typing import Dict, Any, Optional, Tuple, List
+
+# Ensure safe UTF-8 output on all operating systems and terminals
+if hasattr(sys.stdout, "reconfigure"):
+    try:
+        sys.stdout.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
+if hasattr(sys.stderr, "reconfigure"):
+    try:
+        sys.stderr.reconfigure(encoding="utf-8", errors="replace")
+    except Exception:
+        pass
 
 API_BASE = "https://api.github.com"
 GRAPHQL_URL = "https://api.github.com/graphql"
@@ -40,7 +53,7 @@ class GitHubClient:
         endpoint: str,
         method: str = "GET",
         data: Optional[Dict[str, Any]] = None,
-        retries: int = 3,
+        retries: int = 4,
     ) -> Any:
         url = endpoint if endpoint.startswith("http") else f"{API_BASE}{endpoint}"
         body = json.dumps(data).encode("utf-8") if data is not None else None
@@ -65,8 +78,8 @@ class GitHubClient:
                     msg = err_text
 
                 # Secondary rate limit or abuse detection -> backoff
-                if e.code in (403, 429) and ("secondary rate limit" in msg.lower() or "abuse" in msg.lower()):
-                    wait_time = (attempt + 1) * 5
+                if e.code in (403, 429) and ("rate limit" in msg.lower() or "abuse" in msg.lower()):
+                    wait_time = (attempt + 1) * 6
                     print(f"\n[!] GitHub rate limit trigger detected. Backing off for {wait_time}s...")
                     time.sleep(wait_time)
                     continue
@@ -98,7 +111,9 @@ class GitHubClient:
             "name": name,
             "private": is_private,
             "description": description,
-            "auto_init": True,  # Creates initial commit and README
+            "auto_init": True,
+            "has_discussions": True,
+            "has_issues": True,
         }
         return self.request("/user/repos", method="POST", data=payload)
 
@@ -169,36 +184,62 @@ class GitHubClient:
         return self.request(f"/repos/{owner}/{repo}/issues/{issue_number}", method="PATCH", data=payload)
 
 
+def get_token_from_git_credential() -> Optional[str]:
+    """Retrieves GitHub token directly from Git Credential Manager on the machine."""
+    try:
+        proc = subprocess.run(
+            ["git", "credential", "fill"],
+            input="protocol=https\nhost=github.com\n",
+            capture_output=True,
+            text=True,
+            check=False,
+        )
+        if proc.returncode == 0 and proc.stdout:
+            for line in proc.stdout.splitlines():
+                if line.startswith("password="):
+                    val = line.split("=", 1)[1].strip()
+                    if val.startswith("ghp_") or val.startswith("github_pat_"):
+                        return val
+    except Exception:
+        pass
+    return None
+
+
 def load_env_token() -> Optional[str]:
-    # Check environment variable
+    # 1. Environment variable
     token = os.environ.get("GITHUB_TOKEN") or os.environ.get("GH_TOKEN")
     if token:
         return token.strip()
 
-    # Check local .env file
+    # 2. Local .env file
     if os.path.exists(".env"):
         try:
             with open(".env", "r", encoding="utf-8") as f:
                 for line in f:
                     line = line.strip()
                     if line.startswith("GITHUB_TOKEN="):
-                        return line.split("=", 1)[1].strip().strip('"').strip("'")
+                        val = line.split("=", 1)[1].strip().strip('"').strip("'")
+                        if val and not val.startswith("ghp_yourPersonal"):
+                            return val
         except Exception:
             pass
+
+    # 3. Git Credential Manager on PC
+    token = get_token_from_git_credential()
+    if token:
+        return token
+
     return None
 
 
 def get_git_remote_repo() -> Optional[str]:
-    """Tries to inspect current repo git remote url if available."""
+    """Inspects current repo git remote url if available."""
     try:
-        import subprocess
-
         output = subprocess.check_output(
             ["git", "config", "--get", "remote.origin.url"],
             stderr=subprocess.DEVNULL,
             text=True,
         ).strip()
-        # Parse github.com:owner/repo.git or https://github.com/owner/repo.git
         if "github.com" in output:
             cleaned = output.split("github.com", 1)[1].lstrip("/:")
             if cleaned.endswith(".git"):
@@ -213,7 +254,7 @@ def get_git_remote_repo() -> Optional[str]:
 
 def farm_quickdraw(client: GitHubClient, owner: str, repo: str):
     print("\n" + "=" * 60)
-    print("🎯 [ACHIEVEMENT] Quickdraw: Closed issue/PR within 5 minutes")
+    print("[ACHIEVEMENT] Quickdraw: Closed issue/PR within 5 minutes")
     print("=" * 60)
     print(f"Creating an issue on {owner}/{repo} and closing it immediately...")
 
@@ -229,7 +270,7 @@ def farm_quickdraw(client: GitHubClient, owner: str, repo: str):
     # Close immediately (< 5 minutes)
     client.close_issue(owner, repo, issue_num)
     print(f"-> Issue #{issue_num} closed immediately!")
-    print("✅ Quickdraw badge action completed successfully!")
+    print("[+] Quickdraw badge action completed successfully!")
 
 
 def farm_pulls(
@@ -240,10 +281,10 @@ def farm_pulls(
     pair_prs: int = 24,
     co_author_name: str = "Monalisa Octocat",
     co_author_email: str = "octocat@github.com",
-    delay: float = 0.8,
+    delay: float = 0.6,
 ):
     print("\n" + "=" * 60)
-    print(f"🎯 [ACHIEVEMENT] Pull Shark & Pair Extraordinaire & YOLO")
+    print(f"[ACHIEVEMENT] Pull Shark & Pair Extraordinaire & YOLO")
     print("=" * 60)
     print(f"Target PR count: {total_prs} (Co-authored: {pair_prs})")
     print(f"Co-author: {co_author_name} <{co_author_email}>")
@@ -312,24 +353,24 @@ def farm_pulls(
             rate = i / elapsed if elapsed > 0 else 0
             remaining = (total_prs - i) / rate if rate > 0 else 0
             print(
-                f"[{i}/{total_prs}] Merged PR #{pr_number} ({badge_tag}) "
+                f"[{i:03d}/{total_prs:03d}] Merged PR #{pr_number} ({badge_tag}) "
                 f"| Elapsed: {int(elapsed)}s | ETA: {int(remaining)}s"
             )
 
             # Achievement milestones
             if i == 1:
-                print("   🌟 Milestone: YOLO achievement unlocked! (Merged PR without review)")
-                print("   🌟 Milestone: Pair Extraordinaire (Bronze) unlocked!")
+                print("   [*] Milestone: YOLO achievement unlocked! (Merged PR without review)")
+                print("   [*] Milestone: Pair Extraordinaire (Bronze) unlocked!")
             elif i == 2:
-                print("   🌟 Milestone: Pull Shark (Bronze) unlocked! (2 PRs merged)")
+                print("   [*] Milestone: Pull Shark (Bronze) unlocked! (2 PRs merged)")
             elif i == 10 and pair_prs >= 10:
-                print("   🌟 Milestone: Pair Extraordinaire (Silver) unlocked! (10 co-authored PRs)")
+                print("   [*] Milestone: Pair Extraordinaire (Silver) unlocked! (10 co-authored PRs)")
             elif i == 16:
-                print("   🌟 Milestone: Pull Shark (Silver) unlocked! (16 PRs merged)")
+                print("   [*] Milestone: Pull Shark (Silver) unlocked! (16 PRs merged)")
             elif i == 24 and pair_prs >= 24:
-                print("   🌟 Milestone: Pair Extraordinaire (Gold - Max Tier) unlocked! (24 co-authored PRs)")
+                print("   [*] Milestone: Pair Extraordinaire (Gold - Max Tier) unlocked! (24 co-authored PRs)")
             elif i == 128:
-                print("   🌟 Milestone: Pull Shark (Gold - Max Tier) unlocked! (128 PRs merged)")
+                print("   [*] Milestone: Pull Shark (Gold - Max Tier) unlocked! (128 PRs merged)")
 
             if delay > 0 and i < total_prs:
                 time.sleep(delay)
@@ -339,7 +380,136 @@ def farm_pulls(
             print("Retrying next iteration after 3 seconds...")
             time.sleep(3)
 
-    print(f"\n✅ All {total_prs} Pull Requests merged successfully!")
+    print(f"\n[+] All {total_prs} Pull Requests merged successfully!")
+
+
+def farm_discussions(client: GitHubClient, owner: str, repo: str, count: int = 2):
+    print("\n" + "=" * 60)
+    print(f"[ACHIEVEMENT] Galaxy Brain (Discussions Q&A Answers)")
+    print("=" * 60)
+    print(f"Target accepted answers: {count}")
+
+    # Query repository ID and discussion categories
+    query = """
+    query($owner: String!, $name: String!) {
+      repository(owner: $owner, name: $name) {
+        id
+        discussionCategories(first: 10) {
+          nodes {
+            id
+            name
+            isAnswerable
+          }
+        }
+      }
+    }
+    """
+    try:
+        res = client.graphql(query, {"owner": owner, "name": repo})
+        repo_data = res.get("data", {}).get("repository")
+        if not repo_data:
+            print("[X] Unable to query repository via GraphQL.")
+            return
+
+        repo_id = repo_data["id"]
+        categories = repo_data.get("discussionCategories", {}).get("nodes", [])
+
+        # Find answerable category (usually Q&A)
+        qa_cat = None
+        for cat in categories:
+            if cat.get("isAnswerable"):
+                qa_cat = cat
+                break
+
+        if not qa_cat:
+            print("[!] No answerable discussion category found (e.g. Q&A).")
+            print("Please ensure Discussions is enabled with Q&A in repo settings.")
+            return
+
+        cat_id = qa_cat["id"]
+        print(f"[+] Found answerable category: {qa_cat['name']} ({cat_id})")
+
+        create_disc_mutation = """
+        mutation($repositoryId: ID!, $categoryId: ID!, $title: String!, $body: String!) {
+          createDiscussion(input: {repositoryId: $repositoryId, categoryId: $categoryId, title: $title, body: $body}) {
+            discussion {
+              id
+              number
+              url
+            }
+          }
+        }
+        """
+
+        add_comment_mutation = """
+        mutation($discussionId: ID!, $body: String!) {
+          addDiscussionComment(input: {discussionId: $discussionId, body: $body}) {
+            comment {
+              id
+            }
+          }
+        }
+        """
+
+        mark_answer_mutation = """
+        mutation($id: ID!) {
+          markDiscussionCommentAsAnswer(input: {id: $id}) {
+            discussion {
+              id
+            }
+          }
+        }
+        """
+
+        for i in range(1, count + 1):
+            disc_title = f"Technical Question #{i}: How to verify algorithm performance in Python?"
+            disc_body = (
+                f"### Question #{i}\n\n"
+                f"What is the recommended approach to profile execution time accurately in Python?\n"
+            )
+            d_res = client.graphql(create_disc_mutation, {
+                "repositoryId": repo_id,
+                "categoryId": cat_id,
+                "title": disc_title,
+                "body": disc_body,
+            })
+            disc = d_res.get("data", {}).get("createDiscussion", {}).get("discussion")
+            if not disc:
+                print(f"[X] Failed to create discussion #{i}: {d_res}")
+                continue
+
+            disc_id = disc["id"]
+            print(f"[{i}/{count}] Created Discussion #{disc['number']}: {disc['url']}")
+
+            # Add answer comment
+            answer_body = (
+                f"**Solution for Question #{i}:**\n\n"
+                f"Use the standard library `timeit` or `cProfile` modules:\n"
+                f"```python\nimport timeit\nprint(timeit.timeit('\"- \".join(str(n) for n in range(100))', number=10000))\n```\n"
+            )
+            c_res = client.graphql(add_comment_mutation, {
+                "discussionId": disc_id,
+                "body": answer_body,
+            })
+            comment = c_res.get("data", {}).get("addDiscussionComment", {}).get("comment")
+            if not comment:
+                print(f"[X] Failed to add comment: {c_res}")
+                continue
+
+            comment_id = comment["id"]
+
+            # Mark as answer
+            m_res = client.graphql(mark_answer_mutation, {"id": comment_id})
+            if "errors" in m_res:
+                print(f"[!] Mark answer note: {m_res['errors']}")
+            else:
+                print(f"   [*] Marked comment {comment_id} as accepted answer!")
+
+            time.sleep(1)
+
+        print("[+] Discussion Q&A actions completed!")
+    except Exception as e:
+        print(f"[!] Discussions helper error: {e}")
 
 
 def main():
@@ -349,6 +519,7 @@ def main():
     parser.add_argument("--all", action="store_true", help="Farm all achievements (Quickdraw, YOLO, Pull Shark x128, Pair x24)")
     parser.add_argument("--quickdraw", action="store_true", help="Farm Quickdraw only")
     parser.add_argument("--yolo", action="store_true", help="Farm YOLO only (1 PR)")
+    parser.add_argument("--discussions", type=int, help="Farm Galaxy Brain discussions (e.g. 2, 8, 16)")
     parser.add_argument("--pull-shark", type=int, help="Farm Pull Shark with specific PR count (e.g. 2, 16, 128)")
     parser.add_argument("--pair-extraordinaire", type=int, help="Farm Pair Extraordinaire with specific count (e.g. 1, 10, 24)")
     parser.add_argument("--co-author-name", default="Monalisa Octocat", help="Co-author name for Pair Extraordinaire")
@@ -364,11 +535,6 @@ def main():
         print(" GitHub Achievements Farmer - Setup Required")
         print("============================================================")
         print("No GitHub Personal Access Token found.")
-        print("\nHow to create a token:")
-        print("1. Visit https://github.com/settings/tokens")
-        print("2. Generate a 'Personal access token (classic)'")
-        print("3. Check scopes: 'repo' (Full control of private repositories and activity)")
-        print("4. Copy the generated token (starts with ghp_...)\n")
         try:
             token = input("Enter your GitHub Personal Access Token: ").strip()
         except (KeyboardInterrupt, EOFError):
@@ -386,28 +552,10 @@ def main():
         print(f"\n[+] Authenticated successfully as: {user_login} ({user_info.get('name', 'N/A')})")
     except Exception as e:
         print(f"[X] Authentication failed: {e}")
-        print("Please verify that your token is valid and has 'repo' scope permissions.")
         sys.exit(1)
 
     # 3. Resolve repository
-    repo_full_name = args.repo or get_git_remote_repo()
-    if not repo_full_name:
-        default_target = f"{user_login}/github-achievements"
-        print(f"\nTarget repository not specified.")
-        print(f"Would you like to use or create '{default_target}'? [Y/n]")
-        try:
-            choice = input().strip().lower()
-        except (KeyboardInterrupt, EOFError):
-            sys.exit(1)
-
-        if choice in ("", "y", "yes"):
-            repo_full_name = default_target
-        else:
-            try:
-                repo_full_name = input(f"Enter target repository ({user_login}/<repo-name>): ").strip()
-            except (KeyboardInterrupt, EOFError):
-                sys.exit(1)
-
+    repo_full_name = args.repo or get_git_remote_repo() or f"{user_login}/github-achievements"
     if "/" not in repo_full_name:
         repo_full_name = f"{user_login}/{repo_full_name}"
 
@@ -416,8 +564,7 @@ def main():
     # Check if repo exists, or create it automatically
     repo_obj = client.get_repo(owner, repo_name)
     if not repo_obj:
-        print(f"\n[i] Repository '{owner}/{repo_name}' does not exist on GitHub.")
-        print(f"Creating public repository '{repo_name}' under {owner}...")
+        print(f"\n[i] Repository '{owner}/{repo_name}' does not exist on GitHub. Creating it...")
         try:
             repo_obj = client.create_repo(
                 repo_name,
@@ -425,16 +572,12 @@ def main():
                 description="Repository for GitHub achievement farming and activity tracking",
             )
             print(f"[+] Public repository '{owner}/{repo_name}' created successfully!")
-            # Wait 2 seconds for GitHub to finish initializing master branch
             time.sleep(2)
         except Exception as e:
             print(f"[X] Failed to create repository: {e}")
             sys.exit(1)
     else:
         print(f"[+] Found repository: {owner}/{repo_name} (Private: {repo_obj.get('private', False)})")
-        if repo_obj.get("private"):
-            print("    [NOTE] This repository is PRIVATE. Ensure 'Include private contributions'")
-            print("           is enabled in your GitHub profile settings, or make the repository PUBLIC.")
 
     # 4. Handle actions
     if args.quickdraw:
@@ -450,6 +593,10 @@ def main():
             pair_prs=0,
             delay=args.delay,
         )
+        return
+
+    if args.discussions:
+        farm_discussions(client, owner, repo_name, count=args.discussions)
         return
 
     if args.pull_shark or args.pair_extraordinaire:
@@ -471,6 +618,7 @@ def main():
 
     if args.all:
         farm_quickdraw(client, owner, repo_name)
+        farm_discussions(client, owner, repo_name, count=2)
         farm_pulls(
             client,
             owner,
@@ -481,20 +629,20 @@ def main():
             co_author_email=args.co_author_email,
             delay=args.delay,
         )
-        print("\n🎉 ALL FARMING TASKS COMPLETE!")
-        print("Note: GitHub badge updates may take between 10 minutes to 24 hours to sync to your profile.")
+        print("\n[+] ALL FARMING TASKS COMPLETE!")
+        print("Note: GitHub badge updates may take between 15 minutes to 24 hours to sync to your profile.")
         return
 
     # Interactive Menu
     print("\n" + "=" * 60)
-    print(" 🚀 GitHub Achievements Farmer - Action Menu")
+    print(" GitHub Achievements Farmer - Action Menu")
     print("=" * 60)
-    print(" [1] 🏆 Farm ALL (Gold Pull Shark x128 + Gold Pair x24 + Quickdraw + YOLO)")
-    print(" [2] ⚡ Quickdraw only (Open & close issue in <5 seconds)")
-    print(" [3] 🚀 YOLO only (1 PR merged without review)")
-    print(" [4] 🤝 Pair Extraordinaire (Bronze x1, Silver x10, Gold x24)")
-    print(" [5] 🦈 Pull Shark (Bronze x2, Silver x16, Gold x128)")
-    print(" [6] ⚙️  Custom PR & Co-author numbers")
+    print(" [1] Farm ALL (Gold Pull Shark x128 + Gold Pair x24 + Quickdraw + YOLO + Discussions)")
+    print(" [2] Quickdraw only (Open & close issue in <5 seconds)")
+    print(" [3] YOLO only (1 PR merged without review)")
+    print(" [4] Pair Extraordinaire (Bronze x1, Silver x10, Gold x24)")
+    print(" [5] Pull Shark (Bronze x2, Silver x16, Gold x128)")
+    print(" [6] Galaxy Brain discussions Q&A")
     print(" [0] Exit")
     print("=" * 60)
 
@@ -505,6 +653,7 @@ def main():
 
     if selection == "1":
         farm_quickdraw(client, owner, repo_name)
+        farm_discussions(client, owner, repo_name, count=2)
         farm_pulls(
             client,
             owner,
@@ -520,24 +669,17 @@ def main():
     elif selection == "3":
         farm_pulls(client, owner, repo_name, total_prs=1, pair_prs=0, delay=args.delay)
     elif selection == "4":
-        tier_choice = input("Select tier: [1] Bronze (1 PR), [2] Silver (10 PRs), [3] Gold (24 PRs): ").strip()
-        count = 24 if tier_choice == "3" else (10 if tier_choice == "2" else 1)
+        count = 24
         farm_pulls(client, owner, repo_name, total_prs=count, pair_prs=count, delay=args.delay)
     elif selection == "5":
-        tier_choice = input("Select tier: [1] Bronze (2 PRs), [2] Silver (16 PRs), [3] Gold (128 PRs): ").strip()
-        count = 128 if tier_choice == "3" else (16 if tier_choice == "2" else 2)
+        count = 128
         farm_pulls(client, owner, repo_name, total_prs=count, pair_prs=0, delay=args.delay)
     elif selection == "6":
-        try:
-            total = int(input("Enter total PR count (e.g. 128): ").strip() or "128")
-            pair = int(input("Enter co-authored PR count (e.g. 24): ").strip() or "24")
-            farm_pulls(client, owner, repo_name, total_prs=total, pair_prs=pair, delay=args.delay)
-        except ValueError:
-            print("[X] Invalid number.")
+        farm_discussions(client, owner, repo_name, count=2)
     else:
         print("Exiting.")
 
-    print("\n🎉 DONE! Check your GitHub profile achievements page soon.")
+    print("\n[+] DONE! Check your GitHub profile achievements page soon.")
 
 
 if __name__ == "__main__":
