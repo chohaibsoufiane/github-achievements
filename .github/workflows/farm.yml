@@ -1,0 +1,66 @@
+name: Farm GitHub Achievements
+
+on:
+  workflow_dispatch:
+    inputs:
+      action:
+        description: 'Achievement to farm'
+        required: true
+        default: 'all'
+        type: choice
+        options:
+          - 'all'
+          - 'pull-shark'
+          - 'pair-extraordinaire'
+          - 'quickdraw'
+          - 'yolo'
+      pull_count:
+        description: 'Total PRs to merge (for Pull Shark / all)'
+        required: false
+        default: '128'
+        type: string
+      pair_count:
+        description: 'Co-authored PRs (for Pair Extraordinaire / all)'
+        required: false
+        default: '24'
+        type: string
+
+jobs:
+  farm:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+
+      - name: Run Achievements Farmer
+        env:
+          # Personal Access Token must be stored in Repository Secrets as PAT_TOKEN
+          # Required because default GITHUB_TOKEN acts as github-actions[bot]
+          GITHUB_TOKEN: ${{ secrets.PAT_TOKEN }}
+        run: |
+          if [ -z "$GITHUB_TOKEN" ]; then
+            echo "::error ::PAT_TOKEN secret is not set! GitHub requires human authentication to award achievements. Add a PAT with 'repo' scope in Settings -> Secrets and variables -> Actions -> Repository secrets (named PAT_TOKEN)."
+            exit 1
+          fi
+
+          REPO_NAME="${{ github.repository }}"
+          ACTION="${{ github.event.inputs.action }}"
+          PULLS="${{ github.event.inputs.pull_count }}"
+          PAIRS="${{ github.event.inputs.pair_count }}"
+
+          if [ "$ACTION" = "all" ]; then
+            python farm_achievements.py --repo "$REPO_NAME" --all
+          elif [ "$ACTION" = "quickdraw" ]; then
+            python farm_achievements.py --repo "$REPO_NAME" --quickdraw
+          elif [ "$ACTION" = "yolo" ]; then
+            python farm_achievements.py --repo "$REPO_NAME" --yolo
+          elif [ "$ACTION" = "pull-shark" ]; then
+            python farm_achievements.py --repo "$REPO_NAME" --pull-shark "$PULLS"
+          elif [ "$ACTION" = "pair-extraordinaire" ]; then
+            python farm_achievements.py --repo "$REPO_NAME" --pair-extraordinaire "$PAIRS"
+          fi
